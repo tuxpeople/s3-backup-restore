@@ -10,6 +10,42 @@ Automatic backups to s3. Automatic restores from s3 if the volume is completely 
 Allow forced restores which will overwrite everything in the mounted volume.
 Force restores can be done either for a specific time or the latest.
 
+## Build and runtime
+Build the current image with:
+
+```sh
+docker build -f docker/Dockerfile -t s3-backup-restore:local .
+```
+
+The build uses Go 1.27.3 and AWS SDK for Go v2. The runtime uses Distroless Debian 13
+and runs as UID/GID `65532:65532` by default. Give that user access to the mounted data
+directory and mounted secrets, or select the appropriate UID/GID with `--user` (Docker)
+or `runAsUser` / `runAsGroup` (Kubernetes).
+
+`CHOWN_ENABLE=true` requires permission to change ownership. When restoring to a different
+UID/GID, explicitly run the restore container as root; backup containers can remain unprivileged.
+The development Compose service runs the builder image and is intended for local development.
+
+## Backup and restore safety
+- Only regular files and directories are supported. Backups fail on symbolic links and special
+  files rather than following them or silently creating an incomplete archive. Restore rejects
+  archive links, special files, unsafe paths, and existing symlinks in the target path.
+- Restore replaces each file using a temporary file inside the data directory. Existing hardlinks
+  are replaced without modifying their other targets. Ensure enough free space for the downloaded
+  archive and a replacement of the largest restored file. An interrupted or failed restore can leave
+  a mixture of restored and existing files; the entire restore is not transactional.
+- Failed backups do not prune older backups. Each run owns and removes its own temporary archive.
+  Overlapping backup jobs in one process are skipped. Run only one backup process per bucket/prefix;
+  the process lock does not coordinate separate containers. Use filesystem snapshots or pause writers
+  when application-consistent backups are required.
+- Keep S3 write permissions restricted to trusted backup writers. Restore does not authenticate
+  archives independently of S3. Bucket versioning and a separately configured Object Lock policy
+  can provide additional protection against backup deletion.
+- `-v` and `-vv` enable application debug output without AWS HTTP headers or bodies.
+- Use workload IAM roles where available. AWS environment credentials, shared configuration,
+  and `/run/secrets/AWS_ACCESS_KEY_ID`, `/run/secrets/AWS_SECRET_ACCESS_KEY`, and
+  `/run/secrets/AWS_SESSION_TOKEN` are also supported.
+
 ## Goals
 - [x] Accept credentials through docker secrets and env variables.
 - [x] Backup to s3 on some cadence (configurable).
@@ -18,11 +54,12 @@ Force restores can be done either for a specific time or the latest.
 - [x] Clean up backups.
 
 ## Config
-You'll need to pass in the AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY either using environment variables or docker
-secrets. They should be found in the environment under the same names or `/run/secrets/AWS_ACCESS_KEY_ID` and
-`/run/secrets/AWS_SECRET_ACCESS_KEY`.
+If you use access keys, pass `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` through environment variables
+or Docker secrets under `/run/secrets/`. Temporary credentials also require `AWS_SESSION_TOKEN`.
+IAM roles and shared AWS configuration are supported by the SDK's default credential chain.
 
-AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_BUCKET are the only required environment variables.
+`S3_BUCKET` is required. Configure an AWS region through `AWS_REGION` or shared AWS configuration.
+Credentials may come from an IAM role, AWS environment variables, shared configuration, or Docker secrets.
 
 You can configure the backup and restore using the following environment variables:
 
@@ -38,7 +75,7 @@ docker secrets.
 
 `S3_PATH`: You may specify a path within your bucket to use for backing up and restoring. Defaults to "/".
 
-`DIRECTORY_PERMISSIONS`: The permissions to use when creating new directories. Defaults to 0755. _Files will be
+`DIRECTORY_PERMISSIONS`: Octal permissions for newly created directories (for example, "0755"). Defaults to 0755. _Files will be
 automatically restored to the same permissions they had when they were backed up._
 
 `CADENCE_HOURLY`: Cron schedule for running hourly backups. Defaults to "0 * * * *".
@@ -49,8 +86,8 @@ automatically restored to the same permissions they had when they were backed up
 
 `CADENCE_MONTHLY`: Cron schedule for running monthly backups. Defaults to "10 3 1 * *".
 
-`CHOWN_ENABLE`: Enable changing the permissions of files during restore. If enabled the entire DATA_DIRECTORY will
-have it's ownership changed including files that weren't contained in the backup file. Defaults to "false".
+`CHOWN_ENABLE`: Change ownership of restored files and their parent directories to `CHOWN_UID` / `CHOWN_GID`.
+Unrelated files and the data directory itself are not recursively changed. Defaults to "false".
 
 `CHOWN_UID`: The UID that will be used when changing the ownership of the files. Defaults to 1000.
 
@@ -73,8 +110,7 @@ within the S3 bucket. I.E. "hourly/2019-09-21T19:35:32Z.tar.gz" the S3_PATH will
 in it. Defaults to "false".
 
 ## Notes
-Restore will update existing files but will not remove files that haven't been backed up before. You may request that
-the folder is cleaned before a restore is performed.
+Restore will update existing files but will not remove files that haven't been backed up before. Restore does not offer a directory-cleanup option.
 
 ## Cleanup
 Backups are rotated with a configurable number of backups to keep.
@@ -83,11 +119,14 @@ Backups are rotated with a configurable number of backups to keep.
   3. How many daily backups would you like to keep? Defaults to 3.
   4. How many hourly backups would you like to keep? Defaults to 3.
 
-If you aren't going to be using hourly backups or daily backups you can disable those backups by setting the appropriate
-number of backups to 0. I.E. NUM_HOURLY_BACKUPS = 0 and NUM_DAILY_BACKUPS = 0.
+Set `NUM_BACKUPS_HOURLY=0` or `NUM_BACKUPS_DAILY=0` to disable those backups.
+The legacy names `NUM_HOURLY_BACKUPS`, `NUM_DAILY_BACKUPS`, `NUM_WEEKLY_BACKUPS`, and
+`NUM_MONTHLY_BACKUPS` remain accepted as fallbacks. Counts must be nonnegative integers.
+Pruning and automatic restore consider only timestamped `.tar.gz` files in the four backup-type folders;
+unrelated objects are ignored. Existing archive names remain supported.
 
 ## Logging
-All logs are written to /var/log/run.log
+Logs are written to standard output. Failed direct backup and restore commands exit with a nonzero status.
 
 ## Examples
 I built this for use in kubernetes, but I'd imagine you could use this in any orchestrator. For my example I use an init
@@ -97,11 +136,13 @@ responsible for running the backup cron and backing up the files periodically.
 ```yaml
       initContainers:
         - name: s3-restore
-          image: bloveless/s3-backup-restore:1.0.2
+          image: s3-backup-restore:local
           volumeMounts:
             - name: public-files
               mountPath: /data
           args: ["restore"]
+          securityContext:
+            runAsUser: 0 # Explicitly needed for CHOWN_ENABLE in this example.
           tty: true
           env:
             - name: AWS_ACCESS_KEY_ID
@@ -128,11 +169,14 @@ responsible for running the backup cron and backing up the files periodically.
               value: "1000"
       containers:
         - name: s3-backup
-          image: bloveless/s3-backup-restore:1.0.2
+          image: s3-backup-restore:local
           volumeMounts:
             - name: public-files
               mountPath: /data
           args: ["cron"]
+          securityContext:
+            runAsUser: 1000 # Must be able to read the mounted data.
+            runAsGroup: 1000
           env:
             - name: AWS_ACCESS_KEY_ID
               valueFrom:

@@ -1,3 +1,10 @@
 docker
 test-data
 s3-backup-restore
+.git
+.agents
+.codex
+.aws
+**/.aws
+.env
+.env.*
