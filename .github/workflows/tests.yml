@@ -1,0 +1,107 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go (fmt, vet, test, govulncheck)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [[ -n "$unformatted" ]]; then
+            echo "::error::Files need gofmt: $unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+      # Known vulnerabilities in Go and the dependencies that are actually called
+      - name: govulncheck
+        env:
+          # renovate: datasource=go depName=golang.org/x/vuln
+          GOVULNCHECK_VERSION: v1.9.0
+        run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
+
+  hadolint:
+    name: Dockerfile Linting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run Hadolint
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        with:
+          dockerfile: docker/Dockerfile
+          failure-threshold: error
+
+  image-test:
+    name: Image Smoke Test + Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build image (local only, no push, native arch)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          load: true
+          tags: s3-backup-restore:test
+
+      # The distroless image has no shell: test it from outside
+      - name: Smoke test
+        run: |
+          # The usage is printed to stderr
+          docker run --rm s3-backup-restore:test -h 2>&1 | tee /tmp/help
+          grep -q "cron" /tmp/help
+
+          # Without configuration the cron command must fail with a clear
+          # error. The exit code is read with docker inspect, which is
+          # reliable on every Docker host.
+          docker run --read-only --name cron-test s3-backup-restore:test cron > /tmp/cron.log 2>&1 || true
+          code=$(docker inspect --format '{{.State.ExitCode}}' cron-test)
+          docker rm cron-test >/dev/null
+          cat /tmp/cron.log
+          if [[ "$code" == "0" ]] || ! grep -q "S3_BUCKET is required" /tmp/cron.log; then
+            echo "::error::cron did not fail without configuration (exit code ${code})"
+            exit 1
+          fi
+
+          [[ "$(docker inspect --format '{{.Config.User}}' s3-backup-restore:test)" == "65532:65532" ]]
+          echo "✅ help works, cron refuses to start without configuration, runs as 65532"
+
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: s3-backup-restore:test
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
