@@ -7,11 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"sort"
-	"strings"
+	"syscall"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -79,9 +79,11 @@ func (b Backup) Run(ctx context.Context, kind string) error {
 }
 
 func (b Backup) compressDirectory(timestamp, kind string) (name string, err error) {
-	if err := os.WriteFile(filepath.Join(b.DataDirectory, "BACKUP_DATE"), []byte(fmt.Sprintf("%s/%s\n", kind, timestamp)), 0644); err != nil {
+	root, err := os.OpenRoot(b.DataDirectory)
+	if err != nil {
 		return "", err
 	}
+	defer root.Close()
 	file, err := os.CreateTemp("", "s3-backup-*.tar.gz")
 	if err != nil {
 		return "", err
@@ -96,39 +98,78 @@ func (b Backup) compressDirectory(timestamp, kind string) (name string, err erro
 	}()
 	gz := gzip.NewWriter(file)
 	tw := tar.NewWriter(gz)
+	// Close in this order and propagate every error before allowing an upload.
 	defer func() { err = errors.Join(err, tw.Close(), gz.Close()) }()
-	err = filepath.Walk(b.DataDirectory, func(path string, info os.FileInfo, walkErr error) error {
+	err = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if info.IsDir() {
+		if path == "." {
 			return nil
 		}
-		return b.addFile(tw, path)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing symlink or special file %q", path)
+		}
+		if path == "BACKUP_DATE" {
+			if info.IsDir() {
+				return fmt.Errorf("BACKUP_DATE must be a regular file")
+			}
+			return nil
+		}
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		header.Name = path
+		if info.IsDir() {
+			return tw.WriteHeader(header)
+		}
+		return addRegularFile(root, tw, path, info, header)
 	})
+	if err != nil {
+		return name, err
+	}
+	// Keep the legacy marker inside the archive without writing through a link in /data.
+	marker := []byte(fmt.Sprintf("%s/%s\n", kind, timestamp))
+	if err = tw.WriteHeader(&tar.Header{Name: "BACKUP_DATE", Mode: 0644, Size: int64(len(marker)), Typeflag: tar.TypeReg}); err != nil {
+		return name, err
+	}
+	_, err = tw.Write(marker)
 	return name, err
 }
 
-func (b Backup) addFile(tw *tar.Writer, path string) error {
-	file, err := os.Open(path)
+func addRegularFile(root *os.Root, tw *tar.Writer, name string, expected os.FileInfo, header *tar.Header) error {
+	// Root prevents escapes even if a directory is exchanged for a symlink during the walk.
+	file, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-	info, err := file.Stat()
+	actual, err := file.Stat()
 	if err != nil {
 		return err
 	}
-	header, err := tar.FileInfoHeader(info, path)
-	if err != nil {
-		return err
+	if !actual.Mode().IsRegular() || !os.SameFile(expected, actual) {
+		return fmt.Errorf("file changed during backup: %q", name)
 	}
-	header.Name = strings.ReplaceAll(path, b.DataDirectory+"/", "")
 	if err := tw.WriteHeader(header); err != nil {
 		return err
 	}
-	_, err = io.Copy(tw, file)
-	return err
+	if _, err := io.Copy(tw, file); err != nil {
+		return err
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if after.Size() != actual.Size() || !after.ModTime().Equal(actual.ModTime()) {
+		return fmt.Errorf("file changed during backup: %q", name)
+	}
+	return nil
 }
 
 func (b Backup) pruneS3(ctx context.Context, kind string, count int) error {
