@@ -1,0 +1,44 @@
+---
+# Hadolint configuration for Dockerfile linting
+# https://github.com/hadolint/hadolint
+
+# Ignore specific rules globally
+ignored:
+  # DL3018: Pin versions in apk add
+  # Reason: Base images are version-pinned (alpine:3.19), packages update with base
+  # Renovate handles base image updates automatically
+  # Pinning individual packages is fragile and breaks on base updates
+  - DL3018
+
+# Trusted registries (images from these don't trigger warnings)
+trustedRegistries:
+  - docker.io
+  - ghcr.io
+  - gcr.io
+  - quay.io
+  - cgr.dev  # Chainguard (minimal/distroless base images)
+
+# Override severity of specific rules
+# error | warning | info | style | ignore
+override:
+  error:
+    - DL3001  # sudo usage
+    - DL3002  # Last USER should not be root
+    - DL3003  # Use WORKDIR instead of cd
+    - DL3006  # Always tag image versions
+    - DL3007  # Always use specific tags
+    - DL3013  # Pin pip versions
+    - DL3020  # Use COPY instead of ADD
+    - DL3025  # Use JSON array for CMD/ENTRYPOINT
+  warning:
+    - DL3008  # Pin apt package versions
+    - DL3009  # Delete apt cache
+    - DL3015  # Avoid additional package repositories
+    - DL3018  # Pin apk package versions
+  info:
+    - DL3059  # Multiple RUN commands
+  style:
+    - DL3010  # Copy from root user
+
+# Strict checks - fail on warnings
+# strictLabels: true

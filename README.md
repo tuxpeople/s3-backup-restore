@@ -26,6 +26,31 @@ or `runAsUser` / `runAsGroup` (Kubernetes).
 UID/GID, explicitly run the restore container as root; backup containers can remain unprivileged.
 The development Compose service runs the builder image and is intended for local development.
 
+## Image and releases
+Published as `ghcr.io/tuxpeople/s3-backup-restore` for `linux/amd64` and `linux/arm64`
+with the tags `X.Y.Z`, `X.Y`, `X` and `latest`.
+
+- **Releases:** [release-please](https://github.com/googleapis/release-please) maintains a
+  release PR from the Conventional Commits on `main`. Merging it creates the tag and the GitHub
+  release and builds, signs and publishes the image.
+- **Checks** (`.github/workflows/tests.yml`): `gofmt`, `go vet`, `go test -race`, `govulncheck`,
+  Hadolint, an image smoke test and a blocking Trivy scan.
+- **Supply chain:** the image is signed with Cosign (keyless) and has a signed SLSA provenance
+  and SPDX SBOM as GitHub attestations:
+
+```sh
+cosign verify \
+  --certificate-identity "https://github.com/tuxpeople/s3-backup-restore/.github/workflows/release.yml@refs/heads/main" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/tuxpeople/s3-backup-restore:latest
+
+gh attestation verify oci://ghcr.io/tuxpeople/s3-backup-restore:latest --owner tuxpeople
+```
+
+Before 1.0.0 the image was built from the unmodified upstream code in
+[tuxpeople/containers](https://github.com/tuxpeople/containers) and
+[tuxpeople/oci-containers](https://github.com/tuxpeople/oci-containers) (tags `git-<sha>`).
+
 ## Backup and restore safety
 - Only regular files and directories are supported. Backups fail on symbolic links and special
   files rather than following them or silently creating an incomplete archive. Restore rejects
