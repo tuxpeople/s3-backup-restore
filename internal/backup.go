@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +20,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
+
+// Serialize all backup cadences within this process, including pruning.
+var backupMu sync.Mutex
 
 type Backup struct {
 	HourlyBackups, DailyBackups, WeeklyBackups, MonthlyBackups int
@@ -55,6 +59,10 @@ func (b Backup) Run(ctx context.Context, kind string) error {
 	if count == 0 {
 		return nil
 	}
+	if !backupMu.TryLock() {
+		return errors.New("another backup is already running; skipping overlapping job")
+	}
+	defer backupMu.Unlock()
 	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
 	archive, err := b.compressDirectory(timestamp, kind)
 	if err != nil {
