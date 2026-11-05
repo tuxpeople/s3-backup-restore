@@ -1,67 +1,52 @@
 package internal
 
 import (
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3/s3iface"
+	"context"
+	"fmt"
+	"log/slog"
+
 	"github.com/robfig/cron/v3"
-	log "github.com/sirupsen/logrus"
 )
 
-// Cron contains the config necessary to run a backup cron
 type Cron struct {
-	HourlyCadence  string
-	DailyCadence   string
-	WeeklyCadence  string
-	MonthlyCadence string
-	HourlyBackups  int
-	DailyBackups   int
-	WeeklyBackups  int
-	MonthlyBackups int
-	S3Bucket       string
-	S3Path         string
-	DataDirectory  string
-	AwsSession     *session.Session
-	S3Service      s3iface.S3API
+	HourlyCadence, DailyCadence, WeeklyCadence, MonthlyCadence string
+	HourlyBackups, DailyBackups, WeeklyBackups, MonthlyBackups int
+	S3Bucket, S3Path, DataDirectory                            string
+	S3Service                                                  S3API
+	UploadClient                                               UploadAPI
 }
 
-// Run begins the backup cron
-func (c Cron) Run() {
-	cr := cron.New(
-		cron.WithLogger(
-			cron.VerbosePrintfLogger(
-				log.New(),
-			),
-		),
-	)
-
-	b := Backup{
-		HourlyBackups:  c.HourlyBackups,
-		DailyBackups:   c.DailyBackups,
-		WeeklyBackups:  c.WeeklyBackups,
-		MonthlyBackups: c.MonthlyBackups,
-		S3Bucket:       c.S3Bucket,
-		S3Path:         c.S3Path,
-		DataDirectory:  c.DataDirectory,
-		AwsSession:     c.AwsSession,
-		S3Service:      c.S3Service,
+func (c Cron) Run(ctx context.Context) error {
+	scheduler := cron.New()
+	backup := Backup{
+		HourlyBackups: c.HourlyBackups, DailyBackups: c.DailyBackups,
+		WeeklyBackups: c.WeeklyBackups, MonthlyBackups: c.MonthlyBackups,
+		S3Bucket: c.S3Bucket, S3Path: c.S3Path, DataDirectory: c.DataDirectory,
+		S3Service: c.S3Service, UploadClient: c.UploadClient,
 	}
-
-	if b.HourlyBackups > 0 {
-		cr.AddFunc(c.HourlyCadence, func() { b.Run("hourly") })
+	for _, job := range []struct{ kind, cadence string }{
+		{"hourly", c.HourlyCadence}, {"daily", c.DailyCadence}, {"weekly", c.WeeklyCadence}, {"monthly", c.MonthlyCadence},
+	} {
+		count, err := backup.retention(job.kind)
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			continue
+		}
+		if _, err := scheduler.AddFunc(job.cadence, func() {
+			if err := backup.Run(ctx, job.kind); err != nil {
+				slog.Error("Backup failed", "type", job.kind, "error", err)
+			}
+		}); err != nil {
+			return fmt.Errorf("invalid %s cadence: %w", job.kind, err)
+		}
 	}
-
-	if b.DailyBackups > 0 {
-		cr.AddFunc(c.DailyCadence, func() { b.Run("daily") })
-	}
-
-	if b.WeeklyBackups > 0 {
-		cr.AddFunc(c.WeeklyCadence, func() { b.Run("weekly") })
-	}
-
-	if b.MonthlyBackups > 0 {
-		cr.AddFunc(c.MonthlyCadence, func() { b.Run("monthly") })
-	}
-
-	log.Info("Starting cron")
-	cr.Run()
+	scheduler.Start()
+	slog.Info("Starting cron")
+	<-ctx.Done()
+	// Wait for canceled jobs to finish cleaning up their own temporary files.
+	stopped := scheduler.Stop()
+	<-stopped.Done()
+	return nil
 }
