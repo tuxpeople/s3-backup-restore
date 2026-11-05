@@ -1,7 +1,9 @@
 # S3 Backup and Restore
 A docker image for backing up and restoring data from s3.
 
-**This image has been moved to bloveless/docker-images**
+## Origin
+This repository was cloned from the [`s3-backup-restore` subdirectory](https://github.com/bloveless/docker-images/tree/main/s3-backup-restore)
+of the [bloveless/docker-images](https://github.com/bloveless/docker-images) repository.
 
 ## Description
 Automatic backups to s3. Automatic restores from s3 if the volume is completely empty (configurable).
