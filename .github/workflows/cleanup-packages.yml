@@ -30,9 +30,9 @@ env:
   # How long tagged images of old releases are kept. The age is the build
   # date: tags of the current release (latest, 1.2.3, 1.2, 1) are rebuilt
   # every night and therefore never reach this age.
-  TAG_RETENTION: "18 months"
+  TAG_RETENTION: "36 months"
   # How long untagged versions and sha-* tags are kept
-  UNTAGGED_RETENTION: "30 days"
+  UNTAGGED_RETENTION: "12 months"
   # Tags that are never deleted, regardless of age
   KEEP_TAGS: "latest,main,nightly"
 
