@@ -40,12 +40,15 @@ with the tags `X.Y.Z`, `X.Y`, `X` and `latest`.
 
 ```sh
 cosign verify \
-  --certificate-identity "https://github.com/tuxpeople/s3-backup-restore/.github/workflows/release.yml@refs/heads/main" \
+  --certificate-identity-regexp '^https://github\.com/tuxpeople/shared/\.github/workflows/container-release\.yml@' \
+  --certificate-github-workflow-repository tuxpeople/s3-backup-restore \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   ghcr.io/tuxpeople/s3-backup-restore:latest
 
 gh attestation verify oci://ghcr.io/tuxpeople/s3-backup-restore:latest --owner tuxpeople
 ```
+
+Version 1.0.0 was signed by the release workflow of this repository (`--certificate-identity "https://github.com/tuxpeople/s3-backup-restore/.github/workflows/release.yml@refs/heads/main"`).
 
 Before 1.0.0 the image was built from the unmodified upstream code in
 [tuxpeople/containers](https://github.com/tuxpeople/containers) and
