@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.2](https://github.com/tuxpeople/s3-backup-restore/compare/v1.0.1...v1.0.2) (2026-11-11)
+
+
+### Dependencies
+
+* update aws-sdk-go-v2 monorepo ([#14](https://github.com/tuxpeople/s3-backup-restore/issues/14)) ([df1007a](https://github.com/tuxpeople/s3-backup-restore/commit/df1007ac1dd44ceed33b458869d05ebe3ffae328))
+* update aws-sdk-go-v2 monorepo ([#17](https://github.com/tuxpeople/s3-backup-restore/issues/17)) ([c9aa512](https://github.com/tuxpeople/s3-backup-restore/commit/c9aa5128a1f86a45fa2b6de31b9839275ed8f242))
+* update image golang to v1.27.4 ([#18](https://github.com/tuxpeople/s3-backup-restore/issues/18)) ([19b8ba4](https://github.com/tuxpeople/s3-backup-restore/commit/19b8ba4dd021e02119a31e2f6892f0774defdce5))
+
 ## [1.0.1](https://github.com/tuxpeople/s3-backup-restore/compare/v1.0.0...v1.0.1) (2026-11-07)
 
 
